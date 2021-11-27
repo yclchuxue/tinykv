@@ -287,6 +287,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	//fmt.Print("ID " ,r.id,  r.mid, len(r.Prs),"\n")
 	r.State = StateLeader
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
@@ -372,8 +373,14 @@ func (r *Raft) Step(m pb.Message) error {
 				T = false
 				r.becomeFollower(m.Term, m.From)
 				r.Vote = m.From
-			}
-			if r.id != m.From{
+				r.msgs = append(r.msgs, pb.Message{
+					From: r.id,
+					To: m.From,
+					Term: r.Term,
+					MsgType: pb.MessageType_MsgRequestVoteResponse,
+					Reject: false,
+				})
+			}else if r.id != m.From{
 				r.msgs = append(r.msgs, pb.Message{
 					From: r.id,
 					To: r.id,
@@ -383,7 +390,11 @@ func (r *Raft) Step(m pb.Message) error {
 				})
 			}
 		case pb.MessageType_MsgHup:   //候选者发起选举
+			if r.Vote == r.id{
+				r.Term++
+			}
 			r.votes[r.id] = true
+			r.Vote = r.id
 			r.Step(pb.Message{
 				From: r.id,
 				To: r.id,
@@ -417,8 +428,8 @@ func (r *Raft) Step(m pb.Message) error {
 					nsum++
 				}
 			}
-			//fmt.Print("vote" , sum, r.mid, len(r.votes))
-			if len(r.votes)&1 ==0{
+			
+			if len(r.Prs)&1 ==0{
 				if sum > r.mid{
 					r.becomeLeader()
 					r.Vote = r.id
@@ -426,6 +437,7 @@ func (r *Raft) Step(m pb.Message) error {
 				}
 			}else{
 				if sum >= r.mid{
+					//fmt.Print("vote" , sum, r.mid, len(r.Prs),"\n")
 					r.becomeLeader()
 					r.Vote = r.id
 					r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat,})
