@@ -26,6 +26,12 @@ Usage
 The primary object in raft is a Node. You either start a Node from scratch
 using raft.StartNode or start a Node from some initial state using raft.RestartNode.
 
+用法
+
+raft中的主要对象是节点。您可以从头开始创建节点
+
+使用raft.StartNode或使用raft.RestartNode从某个初始状态启动节点。
+
 To start a node from scratch:
 
   storage := raft.NewMemoryStorage()

@@ -242,6 +242,7 @@ func TestVoteFromAnyState2AA(t *testing.T) {
 			t.Errorf("%s,%s: term %d, want %d", vt, st, r.Term, newTerm)
 		}
 		if r.Vote != 2 {
+			fmt.Print(" ", st, " ")
 			t.Errorf("%s,%s: vote %d, want 2", vt, st, r.Vote)
 		}
 	}

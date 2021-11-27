@@ -88,6 +88,7 @@ func TestLeaderBcastBeat2AA(t *testing.T) {
 	// heartbeat interval
 	hi := 1
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, hi, NewMemoryStorage())
+	//fmt.Printf("%+v",r.Prs)
 	r.becomeCandidate()
 	r.becomeLeader()
 
@@ -232,6 +233,7 @@ func TestFollowerVote2AA(t *testing.T) {
 			{From: 1, To: tt.nvote, Term: 1, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: tt.wreject},
 		}
 		if !reflect.DeepEqual(msgs, wmsgs) {
+			fmt.Print(" ", i, " ")
 			t.Errorf("#%d: msgs = %v, want %v", i, msgs, wmsgs)
 		}
 	}
