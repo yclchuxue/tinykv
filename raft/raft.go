@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -129,6 +130,8 @@ type Raft struct {
 
 	mid uint64
 
+	over_index uint64
+
 	electionRandomTimeout int
 
 	// this peer's role (角色)
@@ -194,6 +197,8 @@ func newRaft(c *Config) *Raft {
 	}else{
 		mid = uint64(len(c.peers)/2)
 	}
+	storage := NewMemoryStorage()
+	raftLog := newLog(storage)
 
 	return &Raft{
 		id : c.ID,
@@ -201,14 +206,13 @@ func newRaft(c *Config) *Raft {
 		heartbeatTimeout: c.HeartbeatTick,
 		electionTimeout: c.ElectionTick,
 		electionRandomTimeout: c.ElectionTick,
-		RaftLog: &RaftLog{
-			storage: c.Storage,
-		},
+		RaftLog: raftLog,
 		heartbeatElapsed: 0,
 		electionElapsed: 0,
 		Prs: pes,
 		votes: vet,
-		Vote: None,
+		Term: storage.hardState.Term,
+		Vote: storage.hardState.Vote,
 		mid: mid,
 	}
 }
@@ -218,6 +222,31 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
+	entries := make([]*pb.Entry, 0)
+
+	for _, p := range r.RaftLog.entries{
+		if p.Index >= r.over_index{
+			entries = append(entries, &pb.Entry{
+				EntryType: p.EntryType,
+			})
+		}
+	}
+
+	Term := r.Term
+	L := len(r.RaftLog.entries)-1
+	if L != 0{
+		Term = r.RaftLog.entries[L].Term
+	}
+	r.msgs = append(r.msgs, pb.Message{
+		From: r.id,
+		To: to,
+		Term: r.Term,
+		MsgType: pb.MessageType_MsgAppend,
+		Index: r.RaftLog.entries[L].Index,
+		LogTerm: Term,
+		Entries: entries,
+		Commit: r.RaftLog.committed,
+	})
 	return false
 }
 
@@ -310,6 +339,28 @@ func (r *Raft) Step(m pb.Message) error {
 				return nil
 			}
 			r.Term = m.Term
+			if m.Entries[0].Index > r.RaftLog.stabled{
+				r.msgs = append(r.msgs, pb.Message{
+					MsgType: pb.MessageType_MsgAppendResponse,
+					From: r.id,
+					To: m.From,
+					Index: m.Entries[0].Index,
+					Reject: true,
+				})
+			}else{
+				start := r.RaftLog.stabled - m.Entries[0].Index + 1
+				for _,p := range m.Entries[start:]{
+					r.RaftLog.entries = append(r.RaftLog.entries, *p)
+					r.RaftLog.stabled++
+				}
+				r.msgs = append(r.msgs, pb.Message{
+					From: r.id,
+					To : m.From,
+					Reject: false,
+					Index: m.Entries[0].Index,
+					MsgType: pb.MessageType_MsgAppendResponse,
+				})
+			}
 
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgRequestVote:  //投票
@@ -318,7 +369,7 @@ func (r *Raft) Step(m pb.Message) error {
 				r.Vote = None
 			}
 			p := false
-			if r.Vote == None || r.Vote == m.From{
+			if r.Vote == None || r.Vote == m.From{ 
 				r.Vote = m.From
 			}else{
 				p = true
@@ -456,12 +507,28 @@ func (r *Raft) Step(m pb.Message) error {
 				return nil
 			}
 
-		case pb.MessageType_MsgPropose:   //领导者接受一个新信息，本地信息
-			for p := range r.Prs{
-				if p != r.id{
-					r.sendAppend(p)
+		case pb.MessageType_MsgPropose:   //领导者接受一个新信息，本地信息	
+			if len(m.Entries) == 1 && m.Entries[0].Data == nil{
+				r.Step(pb.Message{
+					MsgType: pb.MessageType_MsgBeat,
+				})
+			}else{
+				for i := range m.Entries{
+					L := len(r.RaftLog.entries)-1
+					m.Entries[i].Index  = r.RaftLog.entries[L].Index + 1
+					m.Entries[i].Term = r.Term
+					m.Entries[i].EntryType = pb.EntryType(pb.MessageType_MsgAppend)
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])	
+				}
+				for p := range r.Prs{
+					if p != r.id{
+						r.sendAppend(p)
+					}
 				}
 			}
+		case pb.MessageType_MsgAppendResponse:  //对添加信息的响应
+			
+
 		case pb.MessageType_MsgBeat:   //该向追随者发心跳包了
 			for p := range r.Prs{
 				if p != r.id{

@@ -34,12 +34,12 @@ type RaftLog struct {
 	storage Storage
 
 	// committed is the highest log position that is known to be in（committed是已知处于的最高日志位置）
-	// stable storage on a quorum of nodes.（节点仲裁上的稳定存储。）
+	// stable storage on a quorum of nodes.(稳定存储中)
 	committed uint64
 
-	// applied is the highest log position that the application has（applied是应用程序具有的最高日志位置）
-	// been instructed to apply to its state machine.（已指示应用于其状态机。）
-	// Invariant: applied <= committed（不变量：已应用<=已提交）
+	// applied is the highest log position that the application has
+	// been instructed to apply to its state machine.（applied是已指示应用于其状态机的最高日志位置。）
+	// Invariant: applied <= committed（一定 applied <= committed）
 	applied uint64
 
 	// log entries with index <= stabled are persisted to storage.
@@ -67,13 +67,22 @@ type RaftLog struct {
 //newLog使用给定的存储返回日志。它将日志恢复到它刚刚提交的状态，并应用最新的快照。 
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	
+	hardstate,_,_ := storage.InitialState()
+	first_index_storage,_ := storage.FirstIndex()
+	entries,_ := storage.Entries(first_index_storage-1, hardstate.Commit)
+	return &RaftLog{
+		storage: storage,
+		committed: hardstate.Commit,
+		entries: entries,
+		applied: first_index_storage,
+	}
 }
 
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
-//我们需要在某个时间点压缩日志项，如存储压缩稳定的日志项防止日志项在内存中无限增长
+//我们需要在某个时间点压缩日志项，storage压缩稳定的日志项防止日志项在内存中无限增长
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 }
@@ -81,23 +90,39 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries（返回所有不稳定条目）
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+
+	if l.committed < l.stabled{
+		return l.entries[l.committed:l.stabled]
+	}
+
 	return nil
 }
 
-// nextEnts returns all the committed but not applied entries（返回已提交但为应用的条目）
+// nextEnts returns all the committed but not applied entries（返回已提交但未应用的条目）
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+
+	if l.applied <= l.committed{
+		return l.entries[l.applied:l.committed]
+	}
 	return nil
 }
 
 // LastIndex return the last index of the log entries（返回日志项的最后一个索引）
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	last_index := l.entries[0].Index + uint64(len(l.entries))
+	return last_index
 }
 
-// Term return the term of the entry in the given index（返回给定索引中条目的期限）
+// Term return the term of the entry in the given index（返回给定索引中条目的term）
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+
+	offset := l.entries[0].Index
+	if i < offset{
+		return 0, nil
+	}else{
+		return l.entries[i-offset].Term, nil
+	}
 }
