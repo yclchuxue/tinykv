@@ -184,13 +184,6 @@ func newRaft(c *Config) *Raft {
 	pes := make(map[uint64]*Progress)
 	vet := make(map[uint64]bool)
 	//count := uint64(1)
-	for _,i := range c.peers{
-
-		pes[i] = new(Progress)
-		vet[i] = false	
-			//count++
-
-	}
 	mid := uint64(0)
 	if len(c.peers)&1 == 1{
 		mid = uint64((len(c.peers)+1)/2)
@@ -199,6 +192,17 @@ func newRaft(c *Config) *Raft {
 	}
 	storage := NewMemoryStorage()
 	raftLog := newLog(storage)
+	match := uint64(0)
+	next := uint64(len(raftLog.entries))+1
+
+	for _,i := range c.peers{
+
+		pes[i] = &Progress{
+			Match: match,
+			Next: next,
+		}
+		vet[i] = false	
+	}
 
 	return &Raft{
 		id : c.ID,
@@ -223,30 +227,44 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	entries := make([]*pb.Entry, 0)
-
+	//Index := uint64(0)
 	for _, p := range r.RaftLog.entries{
-		if p.Index >= r.over_index{
+		//fmt.Print("\np.index = ", p.Index, "r.committed = ", r.RaftLog.committed, p)
+		if p.Index >= r.RaftLog.committed{
 			entries = append(entries, &pb.Entry{
-				EntryType: p.EntryType,
+				//EntryType: p.EntryType,
+				Term: p.Term,
+				Index: p.Index,
+				Data: p.Data,
 			})
+			//Index = p.Index
 		}
 	}
-
+	//fmt.Print("MMMMMMMMM")
 	Term := r.Term
-	L := len(r.RaftLog.entries)-1
+	L := len(r.RaftLog.entries)
+	if L == 0{
+		return false
+	}
+	/*
 	if L != 0{
+		fmt.Print("PPPP")
 		Term = r.RaftLog.entries[L].Term
 	}
+	*/
+	//fmt.Print(L,"NNNNNNNNNN")
 	r.msgs = append(r.msgs, pb.Message{
 		From: r.id,
 		To: to,
 		Term: r.Term,
 		MsgType: pb.MessageType_MsgAppend,
-		Index: r.RaftLog.entries[L].Index,
+		//Index: r.RaftLog.entries[L-1].Index,
+		Index: entries[0].Index-1,
 		LogTerm: Term,
 		Entries: entries,
 		Commit: r.RaftLog.committed,
 	})
+	//fmt.Print("PPPPPPPP")
 	return false
 }
 
@@ -320,6 +338,10 @@ func (r *Raft) becomeLeader() {
 	r.State = StateLeader
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgPropose,
+		Entries: []*pb.Entry{{}},
+	})
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -335,34 +357,9 @@ func (r *Raft) Step(m pb.Message) error {
 			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup,})
 
 		case pb.MessageType_MsgAppend:  //复制日志项
-			if m.Term < r.Term{
-				return nil
-			}
-			r.Term = m.Term
-			if m.Entries[0].Index > r.RaftLog.stabled{
-				r.msgs = append(r.msgs, pb.Message{
-					MsgType: pb.MessageType_MsgAppendResponse,
-					From: r.id,
-					To: m.From,
-					Index: m.Entries[0].Index,
-					Reject: true,
-				})
-			}else{
-				start := r.RaftLog.stabled - m.Entries[0].Index + 1
-				for _,p := range m.Entries[start:]{
-					r.RaftLog.entries = append(r.RaftLog.entries, *p)
-					r.RaftLog.stabled++
-				}
-				r.msgs = append(r.msgs, pb.Message{
-					From: r.id,
-					To : m.From,
-					Reject: false,
-					Index: m.Entries[0].Index,
-					MsgType: pb.MessageType_MsgAppendResponse,
-				})
-			}
-
+			//fmt.Print("NNNNNNN")
 			r.handleAppendEntries(m)
+
 		case pb.MessageType_MsgRequestVote:  //投票
 			if r.Term < m.Term{
 				r.Term = m.Term
@@ -484,14 +481,12 @@ func (r *Raft) Step(m pb.Message) error {
 				if sum > r.mid{
 					r.becomeLeader()
 					r.Vote = r.id
-					r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat,})
 				}
 			}else{
 				if sum >= r.mid{
 					//fmt.Print("vote" , sum, r.mid, len(r.Prs),"\n")
 					r.becomeLeader()
 					r.Vote = r.id
-					r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat,})
 				}
 			}
 		}
@@ -500,34 +495,79 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateLeader:
 		switch m.MsgType{
 		case pb.MessageType_MsgAppend:  //复制日志项
-			if m.Term > r.Term{
-				r.becomeFollower(m.Term, m.From)
-			}
-			if m.Term < r.Term{
-				return nil
-			}
+			r.handleAppendEntries(m)
 
 		case pb.MessageType_MsgPropose:   //领导者接受一个新信息，本地信息	
+			//fmt.Print("\nlen(m.en) = ", len(m.Entries), m.Entries[0].Data)
+			
 			if len(m.Entries) == 1 && m.Entries[0].Data == nil{
-				r.Step(pb.Message{
-					MsgType: pb.MessageType_MsgBeat,
-				})
-			}else{
-				for i := range m.Entries{
-					L := len(r.RaftLog.entries)-1
-					m.Entries[i].Index  = r.RaftLog.entries[L].Index + 1
-					m.Entries[i].Term = r.Term
-					m.Entries[i].EntryType = pb.EntryType(pb.MessageType_MsgAppend)
-					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])	
-				}
+				m.Entries[0].Term = r.Term
+				m.Entries[0].Index = r.RaftLog.LastIndex()+1
+				m.Entries[0].EntryType = pb.EntryType_EntryConfChange
+				r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[0])
 				for p := range r.Prs{
 					if p != r.id{
 						r.sendAppend(p)
 					}
 				}
+				r.Step(pb.Message{
+					From: r.id,
+					To: r.id,
+					Term: r.Term,
+					MsgType: pb.MessageType_MsgAppendResponse,
+					Index: r.RaftLog.LastIndex(),
+				})
+			}else{
+				L := uint64(len(r.RaftLog.entries))
+				for i := range m.Entries{
+					//fmt.Print("\nL = ", L)
+					m.Entries[i].Index  = r.RaftLog.applied + L + 1
+					//fmt.Print("\n", m.Entries[i].Index,"\n", r.RaftLog.applied+1+L, "\n")
+					m.Entries[i].Term = r.Term
+					m.Entries[i].EntryType = pb.EntryType_EntryNormal
+					r.RaftLog.entries = append(r.RaftLog.entries, *m.Entries[i])
+					L++
+				}
+				//fmt.Print("YYYYYYYY")
+				for p := range r.Prs{
+					if p != r.id{
+						r.sendAppend(p)
+					}
+				}
+				r.Step(pb.Message{
+					From: r.id,
+					To: r.id,
+					Term: r.Term,
+					MsgType: pb.MessageType_MsgAppendResponse,
+					Index: r.RaftLog.LastIndex(),
+				})
 			}
 		case pb.MessageType_MsgAppendResponse:  //对添加信息的响应
+			sum := uint64(0)
 			
+			if m.Index > r.Prs[m.From].Match && m.Term == r.Term{  //添加的节点个数
+				r.Prs[m.From].Match = m.Index
+				r.Prs[m.From].Next = m.Index+1
+			}
+			//fmt.Print(r.votes[r.id])
+			for _,p := range r.Prs{
+				//fmt.Print(r.votes[p])
+				if p.Match == m.Index{
+					sum++
+				}
+			}
+
+			//fmt.Print("\nsum = ", sum)
+			if len(r.Prs)&1 ==0{
+				if sum > r.mid{
+					r.RaftLog.committed = m.Index
+				}
+			}else{
+				if sum >= r.mid{
+					r.RaftLog.committed = m.Index
+				}
+			}
+				
 
 		case pb.MessageType_MsgBeat:   //该向追随者发心跳包了
 			for p := range r.Prs{
@@ -560,6 +600,52 @@ func (r *Raft) Step(m pb.Message) error {
 // handleAppendEntries handle(处理) AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if m.Term < r.Term{      //拒收
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			From: r.id,
+			To: m.From,
+			Index: m.Entries[0].Index,
+			Reject: true,
+		})
+	}
+	if m.Term > r.Term{
+		r.becomeFollower(m.Term, m.From)
+	}
+
+	//fmt.Print("AAAAAAAAA")
+	max_index := r.RaftLog.applied + uint64(len(r.RaftLog.entries))
+	if len(m.Entries) == 0{                 //空包
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			From: r.id,
+			To: m.From,
+			Index: r.RaftLog.LastIndex(),
+			Reject: true,
+		})
+
+	}else if m.Entries[0].Index > max_index{    //拒收
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppendResponse,
+			From: r.id,
+			To: m.From,
+			Index: m.Entries[0].Index,
+			Reject: true,
+		})
+	}else{                                                      //收
+		for _,p := range m.Entries[max_index:]{
+			r.RaftLog.entries = append(r.RaftLog.entries, *p)
+		}
+		Index := r.RaftLog.applied + uint64(len(r.RaftLog.entries))
+		fmt.Print(Index)
+		r.msgs = append(r.msgs, pb.Message{
+			From: r.id,
+			To : m.From,
+			Reject: false,
+			Index: Index,
+			MsgType: pb.MessageType_MsgAppendResponse,
+		})
+	}
 }
 
 // handleHeartbeat handle（处理） Heartbeat RPC request
